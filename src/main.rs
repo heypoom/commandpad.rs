@@ -6,127 +6,105 @@ extern crate text_io;
 
 use midir::MidiOutputConnection;
 use midir::{MidiOutput, MidiOutputPort};
-use midly::Header;
-use midly::Timing::Metrical;
-use midly::TrackEvent;
-use std::thread::JoinHandle;
 
-use std::fs;
 use std::io::stdout;
 use std::io::Write;
-use std::thread::sleep;
-use std::time::Duration;
-
-use midly::{MidiMessage, Smf, TrackEventKind};
 
 fn print(s: &str) {
-    print!("{}", s);
-    stdout().flush().unwrap();
+	print!("{}", s);
+	stdout().flush().unwrap();
 }
 
 fn input(prompt: &str) -> String {
-    print(prompt);
-    read!("{}\n")
+	print(prompt);
+	read!("{}\n")
 }
 
 fn input_usize(prompt: &str) -> usize {
-    print(prompt);
-    read!("{}\n")
+	print(prompt);
+	read!("{}\n")
 }
 
-fn prompt_midi_port(out: &MidiOutput) -> Result<MidiOutputPort, i32> {
-    let out_ports = out.ports();
+fn get_midi_ports(out: &MidiOutput) -> (MidiOutputPort, MidiOutputPort) {
+	let out_ports = out.ports();
 
-    for (index, port) in out_ports.iter().enumerate() {
-        let name = out.port_name(port).unwrap();
-        println!("Port {}: {}", index + 1, name)
-    }
+	let get_port = move |name: &'static str| {
+		out_ports
+			.clone()
+			.into_iter()
+			.find(|p| out.port_name(p).unwrap() == name)
+			.unwrap()
+	};
 
-    let port_index = input_usize("Choose Port: ");
+	let daw_conn = get_port("Launchpad X LPX DAW In");
+	let midi_out = get_port("Launchpad X LPX MIDI In");
 
-    if !(1..out_ports.len() + 1).contains(&port_index) {
-        println!("Port out of bounds!");
-        return Err(1);
-    }
-
-    let chosen_port = out_ports.get(port_index - 1).unwrap();
-    let chosen_port_name = out.port_name(chosen_port).unwrap();
-    println!("Selected Port: {}", chosen_port_name);
-
-    Ok(chosen_port.clone())
+	(daw_conn, midi_out)
 }
 
-fn play_track(
-    track: &Vec<TrackEvent>,
-    header: &Header,
-    conn: &mut MidiOutputConnection,
-    channel: u8,
-) {
-    println!("Format: {:?}", header.format);
-    println!("Timing: {:?}", header.timing);
+pub fn initialize_output() -> (MidiOutputConnection, MidiOutputConnection) {
+	let out = midi_output("CommandPad DAW Output");
+	let (daw_port, midi_port) = get_midi_ports(&out);
 
-    let ticks_per_beat: u16 = match header.timing {
-        Metrical(n) => n.into(),
-        _ => 480,
-    };
+	let daw_conn = out.connect(&daw_port, "commandpad-daw-out").unwrap();
 
-    let ticks_per_beat: u64 = ticks_per_beat.into();
+	let midi_conn = {
+		let midi_out = midi_output("CommandPad MIDI Output");
 
-    println!("Ticks Per Beat: {}", ticks_per_beat);
+		midi_out.connect(&midi_port, "commandpad-midi-out").unwrap()
+	};
 
-    let mut play_note = |note: u8, duration: u64, velocity: u8| {
-        let note_on_msg: u8 = 0b10010000 + channel;
-        let note_off_msg: u8 = 0b10000000 + channel;
+	(daw_conn, midi_conn)
+}
 
-        conn.send(&[note_on_msg, note, velocity]).unwrap();
+pub struct Launchpad {
+	daw_conn: MidiOutputConnection,
+	midi_conn: MidiOutputConnection,
+}
 
-        let wait_for = 500000 * duration / ticks_per_beat;
-        sleep(Duration::from_micros(wait_for));
+impl Launchpad {
+	pub fn new() -> Launchpad {
+		let (daw_conn, midi_conn) = initialize_output();
 
-        conn.send(&[note_off_msg, note, velocity]).unwrap();
-    };
+		Launchpad {
+			daw_conn,
+			midi_conn,
+		}
+	}
 
-    for event in track {
-        match event.kind {
-            TrackEventKind::Midi { message, .. } => match message {
-                MidiMessage::NoteOn { key, vel } => {
-                    let time: u32 = event.delta.into();
-                    play_note(key.into(), time.into(), vel.into());
+	pub fn send(&mut self, message: &[u8]) {
+		self.midi_conn.send(message).unwrap();
+	}
 
-                    println!(
-                        "Play: (Time: {}, Key: {}, Vel: {}, CH/TH: {})",
-                        time, key, vel, channel
-                    );
-                }
-                _ => {}
-            },
-            _ => {}
-        }
-    }
+	pub fn send_daw(&mut self, message: &[u8]) {
+		self.daw_conn.send(message).unwrap();
+	}
+
+	pub fn set_programmer_mode(&mut self, is_enabled: bool) {
+		let mode = if is_enabled { 1 } else { 0 };
+
+		self.send(&[240, 0, 32, 41, 2, 12, 14, mode, 247]);
+	}
+
+	pub fn setup(&mut self) {
+		// Enable Programmer Mode
+		self.set_programmer_mode(true);
+
+		println!("sysex done");
+
+		self.send(&[144, 11, 5]);
+		self.send(&[145, 81, 19]);
+		self.send(&[146, 18, 45]);
+
+		println!("pad done");
+	}
+}
+
+fn midi_output(text: &'static str) -> MidiOutput {
+	MidiOutput::new(text).unwrap()
 }
 
 fn main() {
-    let out = MidiOutput::new("Test Output").unwrap();
-    let out_port = prompt_midi_port(&out).unwrap();
-
-    let mut threads = vec![];
-
-    for i in 0..2 {
-        let out = MidiOutput::new("OP").unwrap();
-        let out_port = out_port.clone();
-        let mut conn_out = out.connect(&out_port, "launchmacro-output").unwrap();
-        let bytes = fs::read("./test.mid").unwrap();
-
-        let handle = std::thread::spawn(move || {
-            let smf = Smf::parse(&bytes).unwrap();
-            let track = smf.tracks.get(i).unwrap();
-            play_track(&track, &smf.header, &mut conn_out, i as u8);
-        });
-
-        threads.push(handle);
-    }
-
-    for thread in threads {
-        thread.join().unwrap();
-    }
+	let mut launchpad = Launchpad::new();
+	launchpad.setup();
 }

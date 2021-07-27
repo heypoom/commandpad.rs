@@ -61,6 +61,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
+name = "commandpad"
+version = "0.1.0"
+dependencies = [
+ "midir",
+ "midly",
+ "text_io",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -166,15 +175,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "83bdfbace3a0e81a4253f73b49e960b053e396a11012cbd49b9b74d6a2b67062"
 dependencies = [
  "wasm-bindgen",
-]
-
-[[package]]
-name = "launchmacro"
-version = "0.1.0"
-dependencies = [
- "midir",
- "midly",
- "text_io",
 ]
 
 [[package]]
