@@ -86,17 +86,14 @@ impl Launchpad {
 		self.send(&[240, 0, 32, 41, 2, 12, 14, mode, 247]);
 	}
 
+	pub fn light_on(&mut self, position: u8, color: u8) {
+		self.send(&[0b10010000, position, color]);
+	}
+
 	pub fn setup(&mut self) {
 		// Enable Programmer Mode
 		self.set_programmer_mode(true);
-
-		println!("sysex done");
-
-		self.send(&[144, 11, 5]);
-		self.send(&[145, 81, 19]);
-		self.send(&[146, 18, 45]);
-
-		println!("pad done");
+		println!("programmer mode enabled");
 	}
 }
 
@@ -107,4 +104,8 @@ fn midi_output(text: &'static str) -> MidiOutput {
 fn main() {
 	let mut launchpad = Launchpad::new();
 	launchpad.setup();
+
+	for position in 10..100 {
+		launchpad.light_on(position, 87);
+	}
 }
