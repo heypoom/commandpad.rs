@@ -58,7 +58,7 @@ impl Flappy {
 			let top_h = rng.gen_range(1..5);
 			let bottom_h = rng.gen_range(1..(6 - top_h));
 
-			self.obstacles.push((8, top_h, bottom_h));
+			self.obstacles.push((9, top_h, bottom_h));
 
 			println!("new obstacle: {:?}", self.obstacles);
 		}
