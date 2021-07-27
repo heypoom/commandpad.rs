@@ -9,5 +9,6 @@ edition = "2018"
 [dependencies]
 midir = "0.7.0"
 midly = "0.5.2"
+rand = "0.8.4"
 text_io = "0.1.8"
 
