@@ -1,12 +1,13 @@
-mod flappy;
 mod launchpad;
 
 #[macro_use]
 extern crate text_io;
 extern crate midir;
 
-use crate::flappy::Flappy;
 use crate::launchpad::{blank_rgb_canvas, get_midi_in_ports, midi_input, rand_u8, Launchpad};
+
+use std::io::{prelude::*, Result};
+use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::channel;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
@@ -15,96 +16,99 @@ use rand::Rng;
 use std::thread::sleep;
 use std::time::Duration;
 
-fn main() {
-	let mut launchpad = Launchpad::new();
-	launchpad.setup();
+fn main() -> Result<()> {
+    let mut launchpad = Launchpad::new();
+    launchpad.setup();
 
-	let mut rng = rand::thread_rng();
+    let (tx, rx): (Sender<i32>, Receiver<i32>) = channel();
 
-	launchpad.clear(1);
+    let input = midi_input("CommandPad MIDI Input");
+    let (_, midi_port) = get_midi_in_ports(&input);
 
-	let fps = 6;
+    let midi_in = input
+        .connect(
+            &midi_port,
+            "CommandPad MIDI Input",
+            move |ms, message, _extra| {
+                if let &[command, position, velocity] = message {
+                    if command == 144 && velocity > 0 {
+                        tx.send(100).unwrap();
+                    }
+                }
+            },
+            (),
+        )
+        .unwrap();
 
-	let mut flappy = Flappy::new();
+    println!("root 2");
 
-	let (tx, rx): (Sender<i32>, Receiver<i32>) = channel();
+    let listener = TcpListener::bind("127.0.0.1:7878")?;
+    listener.set_ttl(100)?;
 
-	let input = midi_input("CommandPad MIDI Input");
-	let (_, midi_port) = get_midi_in_ports(&input);
+    launchpad.clear(0);
 
-	let midi_in = input
-		.connect(
-			&midi_port,
-			"CommandPad MIDI Input",
-			move |ms, message, _extra| {
-				if let &[command, position, velocity] = message {
-					if command == 144 && velocity > 0 {
-						tx.send(100).unwrap();
-					}
-				}
-			},
-			(),
-		)
-		.unwrap();
+    for stream in listener.incoming() {
+        handle_connection(stream?, &mut launchpad);
+    }
 
-	loop {
-		if flappy.is_dead {
-			launchpad.clear(4);
-			println!("Game Over! Your Score: {}", flappy.score);
+    Ok(())
+}
 
-			loop {
-				let v = rx.recv().unwrap_or(-1);
-				if v == 100 {
-					println!("restarting...");
-					flappy.reset();
+enum Instruction {
+    NOOP,
 
-					break;
-				}
-			}
-		}
+    SetTileColor,
+    SetTileRgb,
 
-		let v = rx.try_recv().unwrap_or(-1);
-		flappy.jumping = v == 100;
-		flappy.tick();
+    SetGridRaw,
+    SetGridColor,
+    SetGridRgb,
+}
 
-		let mut canvas = blank_rgb_canvas();
+fn get_instruction(id: u8) -> Instruction {
+    match id {
+        0x03 => Instruction::SetTileColor,
+        0x04 => Instruction::SetTileRgb,
+        0x05 => Instruction::SetGridRaw,
+        0x06 => Instruction::SetGridColor,
+        0x07 => Instruction::SetGridRgb,
+        _ => Instruction::NOOP,
+    }
+}
 
-		for (time, top_h, bottom_h) in flappy.obstacles.clone() {
-			if flappy.is_dead {
-				break;
-			}
+// |   id | action         | parameters                   |
+// |------+----------------+------------------------------|
+// | 0x03 | SET_TILE_COLOR | (position, swatch)           |
+// | 0x04 | SET_TILE_RGB   | (position, red, green, blue) |
+// | 0x05 | SET_GRID_RAW   |
+// | 0x06 | SET_GRID_COLOR | (...swatch)                  |
+// | 0x07 | SET_GRID_RGB   | *(red, green, blue)          |
 
-			if time < 1 {
-				continue;
-			}
+fn handle_connection(mut stream: TcpStream, launchpad: &mut Launchpad) {
+    let mut buffer = [0; 512];
+    stream.read(&mut buffer).unwrap();
 
-			for y in 0..top_h {
-				if time == 1 && y == flappy.char_y as u8 {
-					println!("colliding at top!");
-					flappy.is_dead = true;
-				}
+    let [instruction_id, payload @ ..] = buffer;
 
-				canvas[y as usize][(time - 1) as usize] = vec![0, 127, 0];
-			}
+    match get_instruction(instruction_id) {
+        Instruction::SetTileColor => {
+            let [position, color, ..] = payload;
+            println!("set tile color at {} to {}", position, color);
 
-			for y in (9 - bottom_h)..9 {
-				if time == 1 && y - 1 == flappy.char_y as u8 {
-					println!("colliding at bottom!");
-					flappy.is_dead = true;
-				}
+            launchpad.light_on(position, color);
+        }
 
-				canvas[(y - 1) as usize][(time - 1) as usize] = vec![127, 0, 0];
-			}
-		}
+        Instruction::SetTileRgb => {
+            let [position, r, g, b, ..] = payload;
+            println!("set tile at {} as rgb({}, {}, {})", position, r, g, b);
 
-		canvas[flappy.char_y as usize][1] = if flappy.jumping {
-			vec![0, 0, 127]
-		} else {
-			vec![127, 0, 127]
-		};
+            launchpad.rgb(position, [r, g, b]);
+        }
 
-		launchpad.paint_rgb_grid(canvas);
+        Instruction::SetGridRaw => launchpad.light_grid(payload.into()),
+        Instruction::SetGridColor => launchpad.light_grid(payload.into()),
+        Instruction::SetGridRgb => launchpad.light_grid(payload.into()),
 
-		sleep(Duration::from_millis(1000 / fps))
-	}
+        Instruction::NOOP => {}
+    }
 }
